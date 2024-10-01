@@ -25,7 +25,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 ******************************************************************************/
-#include <stdio.h>
 #include <tusb.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -37,38 +36,48 @@
 #include "LCD_1in14_V2.h" 
 #include "GUI_Paint.h"
 
-uint8_t image_buf[324*324];
-uint8_t displayBuf[240*135*2];
-uint8_t header[2] = {0x55,0xAA};
-
 #define FLAG_VALUE 666
 uint8_t imageReady = 0;
 
+uint8_t image_buf[324*324];
+uint16_t displayBuf[240*135];
+uint8_t header[2] = {0x55,0xAA};
+
+/* Wandelt einen monochromen Pixel in das RGB565-Format um.
+ * Diese Funktion wurde hinzugefügt.
+ */
+uint16_t monochrome2RGB(uint8_t c) {
+    uint16_t imageRGB = (((c & 0xF8) << 8) | ((c & 0xFC) << 3) | ((c & 0xF8) >> 3));
+    // Bytes werden getauscht, um die Endianness zu ändern
+    return (imageRGB >> 8) | (imageRGB << 8);
+}
+
+/* Extrahiert die Helligkeit (einen groben Grauwert) aus einem RGB-Pixel.
+ * Diese Funktion wurde hinzugefügt.
+ */
+uint8_t getPixPrev(uint16_t rgb) {
+    uint16_t swapped_pix = (rgb >> 8) | (rgb << 8);
+    return (swapped_pix & 0x07FF) >> 5;
+}
+
 void core1_entry() {
 
-    // Notify core 0 that core 1 is ready
+    // Benachrichtigung an Core 0, dass Core 1 bereit ist
     multicore_fifo_push_blocking(FLAG_VALUE);
 
-    // Wait for acknowledgment from core 0
+    // Warten auf Bestätigung von Core 0
     uint32_t ack  = multicore_fifo_pop_blocking();
-    if (ack != FLAG_VALUE)
-    	printf("Error: Core 1 failed to receive acknowledgment from core 0!\n");
-	else
-		printf("Success: Core 1 Received acknowledgment from core 0!\n");
 
-    // LCD Init
+    // LCD-Initialisierung
     DEV_Module_Init();
     LCD_1IN14_V2_Init(HORIZONTAL);
     LCD_1IN14_V2_Clear(BLACK);
     UDOUBLE Imagesize = LCD_1IN14_V2_HEIGHT * LCD_1IN14_V2_WIDTH * 2;
     UWORD *BlackImage;
     if ((BlackImage = (UWORD *)malloc(Imagesize)) == NULL)
-    {
-        printf("Failed to apply for black memory...\r\n");
         exit(0);
-    }
     
-    // Create a new image cache and draw on the image
+    // Neues Bild erstellen und auf dem LCD anzeigen
     Paint_NewImage((UBYTE *)BlackImage, LCD_1IN14_V2.WIDTH, LCD_1IN14_V2.HEIGHT, 0, WHITE);
     Paint_SetScale(65);
     Paint_SetRotate(ROTATE_0);
@@ -76,26 +85,33 @@ void core1_entry() {
     LCD_1IN14_V2_Display(BlackImage);
     DEV_Delay_ms(500);
 
-    // CAM Init
+    // Kamera-Initialisierung
     struct cam_config config;
     cam_config_struct(&config);
     cam_init(&config);
 
-    // Image Processing
+    // Bildverarbeitungsschleife
     while (true) {
         cam_capture_frame(&config);
 
         uint16_t index = 0;
+        uint16_t diff_index = 0;
+        uint32_t diff_counter = 0;
         for (int y = 134; y > 0; y--) {
             for (int x = 0; x < 240; x++) {
-                uint16_t c = image_buf[(y)*324+(x)];
-                uint16_t imageRGB = (((c & 0xF8) << 8) | ((c & 0xFC) << 3) | ((c & 0xF8) >> 3));
-                displayBuf[index++] = (uint16_t)(imageRGB >> 8) & 0xFF;
-                displayBuf[index++] = (uint16_t)(imageRGB) & 0xFF;
+                
+                uint8_t pix = image_buf[(y)*324+(x)];
+                uint16_t c = pix;
+                uint16_t swappedRGB = monochrome2RGB(c);
+                
+                // Der Display-Buffer wird mit dem neuen Pixelwert aktualisiert
+                displayBuf[index] = swappedRGB;
+
+                index++;
             }
         }
 
-        // Set the imageReady flag to indicate the image is ready for display
+        // Flag setzen, dass das Bild bereit zur Anzeige ist
         imageReady = 1;
     }
 }
@@ -110,28 +126,31 @@ int main() {
             break;
     }
 
-    printf("tud_cdc_connected(%d)\n", tud_cdc_connected() ? 1 : 0);
     vreg_set_voltage(VREG_VOLTAGE_1_10);
     set_sys_clock_khz(250000, true);
     multicore_launch_core1(core1_entry);
 
-    // Wait for acknowledgment from core 1
+    // Warten auf Bestätigung von Core 1
     uint32_t ack = multicore_fifo_pop_blocking();
-    if (ack != FLAG_VALUE)
-        printf("Error: Core 0 failed to receive acknowledgment from core 1!\n");
-    else {
+    if (ack == FLAG_VALUE) {
         multicore_fifo_push_blocking(FLAG_VALUE);
-        printf("Success: Core 0 Received acknowledgment from core 1!\n");
     }
 
-    // Show Image
+    uint16_t text_cnt = 0;
+
+    // Frame Zaehler für Aufgabe 1
+    int frame_cnt = 0;
+    // Bildanzeige-Schleife
     while (1) {
         if (imageReady == 1) {
+
+            // Das Bild wird auf dem Display angezeigt
             LCD_1IN14_V2_Display((uint16_t*)displayBuf);
-            // Reset the imageReady flag after displaying the image
+            
+            // Nach der Bildanzeige wird das imageReady-Flag zurückgesetzt
             imageReady = 0;
         }
-		DEV_Delay_ms(1);
+        DEV_Delay_ms(1);
     }
     tight_loop_contents();
 }
