@@ -783,7 +783,7 @@ void Paint_DrawNum(UWORD Xpoint, UWORD Ypoint, double Nummber,
     
     if(Digit==0)
     {
-        sprintf(Str, "%d",Nummber);
+        sprintf(Str, "%d",(int) Nummber);
     }
     else
     {
